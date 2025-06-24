@@ -1,27 +1,70 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
 
-# ✅ App settings
+# App settings
 st.set_page_config(layout="wide", page_title="Chartered Secretary Extracts")
 
-# Load Excel
+# Font Awesome
+st.markdown("""
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+""", unsafe_allow_html=True)
+
+BOOKMARK_FILE = "bookmarks.json"
+
+# Load or initialize bookmarks
+if os.path.exists(BOOKMARK_FILE):
+    with open(BOOKMARK_FILE, "r") as f:
+        st.session_state.bookmarks = json.load(f)
+else:
+    st.session_state.bookmarks = []
+
+def save_bookmarks():
+    with open(BOOKMARK_FILE, "w") as f:
+        json.dump(st.session_state.bookmarks, f)
+
 @st.cache_data
 def load_excel():
     return pd.read_excel("Updated_Chartered_Secretary.xlsx", sheet_name=None)
 
 sheets = load_excel()
 
+search_query = st.text_input("🔍 Global Search across all content")
+
+if search_query:
+    st.markdown("---")
+    st.subheader(f"🔎 Search Results for: '{search_query}'")
+
+    def search_in_df(df, columns):
+        mask = df[columns].astype(str).apply(lambda row: row.str.contains(search_query, case=False, na=False)).any(axis=1)
+        return df[mask]
+
+    def show_results(df, label, icon):
+        if not df.empty:
+            st.markdown(f"### {icon} {label} ({len(df)})")
+            for _, row in df.iterrows():
+                st.markdown(f"""
+                <div style='padding:12px; border:1px solid #ccc; border-radius:8px; margin-bottom:15px;'>
+                    <b>Title:</b> {row.get('Title', '')}<br>
+                    <b>Section:</b> {row.get('Section', '')} &nbsp;&nbsp;&nbsp;
+                    <a href='{row.get('Link', '')}' target='_blank'><i class='fa-solid fa-file-pdf'></i> Open PDF</a>
+                </div>
+                """, unsafe_allow_html=True)
+
+    show_results(search_in_df(sheets["Articles"], ["Title", "Auther", "Section", "Ref"]), "Articles", "📄")
+    show_results(search_in_df(sheets["Judgements"], ["Title", "Type", "Section", "Summary"]), "Judgements", "⚖️")
+    show_results(search_in_df(sheets["Updates"], ["Title", "Type"]), "Updates", "🧾")
+    show_results(search_in_df(sheets["ROC & RD ADJUDICATION"], ["Title", "Section", "Authority", "Judgement"]), "ROC & RD Adjudication", "🏛️")
+
+    st.stop()
+
 st.title("📘 Chartered Secretary Knowledge Hub")
+tabs = st.tabs(["📄 Articles", "⚖️ Judgements", "🧾 Updates", "🏛️ ROC & RD Adjudication", "⭐ Bookmarks"])
 
-# Icons for each tab
-tabs = st.tabs(["📄 Articles", "⚖️ Judgements", "🧾 Updates", "🏛️ ROC & RD Adjudication"])
-
-# Pagination helper
 def paginate(df, key_prefix, page_size=10):
     total_pages = (len(df) - 1) // page_size + 1
     current_page = st.session_state.get(f"{key_prefix}_page", 1)
-
-    # Display content
     start_idx = (current_page - 1) * page_size
     end_idx = start_idx + page_size
     df_page = df.iloc[start_idx:end_idx]
@@ -29,7 +72,6 @@ def paginate(df, key_prefix, page_size=10):
     for _, row in df_page.iterrows():
         yield row
 
-    # Pagination controls
     st.divider()
     cols = st.columns(min(total_pages, 10) + 2)
     for i in range(min(total_pages, 10)):
@@ -41,106 +83,110 @@ def paginate(df, key_prefix, page_size=10):
             if current_page < total_pages:
                 st.session_state[f"{key_prefix}_page"] = current_page + 1
 
-# ---------- TAB 1: ARTICLES ----------
+def render_item(row, content_type):
+    title = row['Title']
+    author = row.get('Auther', '-')
+    section = row.get('Section', '-')
+    ref = row.get('Ref', '-')
+    link = row['Link']
+
+    col_main, col_btn = st.columns([5, 1])
+    with col_main:
+        st.markdown(f"""
+        <div style='padding:12px; border:1px solid #ccc; border-radius:8px;'>
+            <div style='font-weight:500; font-size:1.05em; margin-bottom:8px;'>{title}</div>
+            <div style='display:flex; flex-wrap:wrap; gap:15px; font-size:0.9em; margin-bottom:6px;'>
+                <div>✍️ <b>{author}</b></div>
+                <div>📑 <b>{section}</b></div>
+                <div>🏷️ <b>{ref}</b></div>
+            </div>
+            <a href="{link}" target="_blank" style="text-decoration:none;">
+                <i class="fa-solid fa-file-pdf"></i> Open PDF
+            </a>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_btn:
+        if st.button("🔖", key=f"bm_{content_type}_{title}"):
+            if link not in [b['link'] for b in st.session_state.bookmarks]:
+                st.session_state.bookmarks.append({"type": content_type, "title": title, "link": link})
+                save_bookmarks()
+                st.success("Bookmarked!")
+
 with tabs[0]:
     df = sheets["Articles"].drop(columns=["Page"])
+    author_counts = df["Auther"].value_counts().to_dict()
+    author_options = ["All"] + [f"{a} ({c} Articles)" for a, c in sorted(author_counts.items())]
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        selected_author = st.selectbox("Filter by Author", ["All"] + sorted(df["Auther"].dropna().unique()))
+        author_disp = st.selectbox("Author", author_options)
+        author = author_disp.split(" (")[0] if author_disp != "All" else "All"
     with col2:
-        selected_section = st.selectbox("Filter by Section", ["All"] + sorted(df["Section"].dropna().astype(str).unique()))
+        section = st.selectbox("Section", ["All"] + sorted(df["Section"].dropna().astype(str).unique()))
     with col3:
-        selected_ref = st.selectbox("Filter by Reference", ["All"] + sorted(df["Ref"].dropna().unique()))
+        ref = st.selectbox("Reference", ["All"] + sorted(df["Ref"].dropna().unique()))
 
-    if selected_author != "All":
-        df = df[df["Auther"] == selected_author]
-    if selected_section != "All":
-        df = df[df["Section"].astype(str) == selected_section]
-    if selected_ref != "All":
-        df = df[df["Ref"] == selected_ref]
+    if author != "All":
+        df = df[df["Auther"] == author]
+    if section != "All":
+        df = df[df["Section"].astype(str) == section]
+    if ref != "All":
+        df = df[df["Ref"] == ref]
 
+    st.markdown(f"### 🧾 Total Articles: {len(df)}")
     for row in paginate(df, "articles"):
-        st.markdown(f"""
-        <div style='margin-bottom:15px;'>
-        <b>Title:</b> {row['Title']}<br>
-        <b>Author:</b> {row['Auther']} &nbsp;&nbsp;&nbsp;
-        <b>Section:</b> {row['Section']} &nbsp;&nbsp;&nbsp;
-        <b>Reference:</b> {row['Ref']} &nbsp;&nbsp;&nbsp;
-        <a href='{row['Link']}' target='_blank'>📄 Open PDF</a>
-        </div>
-        <hr>
-        """, unsafe_allow_html=True)
+        render_item(row, "Article")
 
-# ---------- TAB 2: JUDGEMENTS ----------
 with tabs[1]:
     df = sheets["Judgements"].drop(columns=["Page"])
-
     col1, col2 = st.columns(2)
     with col1:
-        selected_type = st.selectbox("Filter by Type", ["All"] + sorted(df["Type"].dropna().unique()))
+        j_type = st.selectbox("Type", ["All"] + sorted(df["Type"].dropna().unique()))
     with col2:
-        selected_section = st.selectbox("Filter by Section", ["All"] + sorted(df["Section"].dropna().astype(str).unique()))
+        section = st.selectbox("Section", ["All"] + sorted(df["Section"].dropna().astype(str).unique()))
 
-    if selected_type != "All":
-        df = df[df["Type"] == selected_type]
-    if selected_section != "All":
-        df = df[df["Section"].astype(str) == selected_section]
+    if j_type != "All":
+        df = df[df["Type"] == j_type]
+    if section != "All":
+        df = df[df["Section"].astype(str) == section]
 
     for row in paginate(df, "judgements"):
-        st.markdown(f"""
-        <div style='margin-bottom:15px;'>
-        <b>Title:</b> {row['Title']}<br>
-        <b>Type:</b> {row['Type']} &nbsp;&nbsp;&nbsp;
-        <b>Section:</b> {row['Section']}<br>
-        <b>Summary:</b> {row['Summary']}<br>
-        <a href='{row['Link']}' target='_blank'>📄 Open PDF</a>
-        </div>
-        <hr>
-        """, unsafe_allow_html=True)
+        render_item(row, "Judgement")
 
-# ---------- TAB 3: UPDATES ----------
 with tabs[2]:
     df = sheets["Updates"].drop(columns=["Page"])
-
-    selected_type = st.selectbox("Filter by Type", ["All"] + sorted(df["Type"].dropna().unique()))
-    if selected_type != "All":
-        df = df[df["Type"] == selected_type]
-
+    update_type = st.selectbox("Type", ["All"] + sorted(df["Type"].dropna().unique()))
+    if update_type != "All":
+        df = df[df["Type"] == update_type]
     for row in paginate(df, "updates"):
-        st.markdown(f"""
-        <div style='margin-bottom:15px;'>
-        <b>Title:</b> {row['Title']}<br>
-        <b>Type:</b> {row['Type']} &nbsp;&nbsp;&nbsp;
-        <a href='{row['Link']}' target='_blank'>📄 Open PDF</a>
-        </div>
-        <hr>
-        """, unsafe_allow_html=True)
+        render_item(row, "Update")
 
-# ---------- TAB 4: ROC & RD ADJUDICATION ----------
 with tabs[3]:
     df = sheets["ROC & RD ADJUDICATION"].drop(columns=["Page"])
-
     col1, col2 = st.columns([1, 3])
     with col1:
-        section_filter = st.selectbox("Filter by Section", ["All"] + sorted(df["Section"].dropna().astype(str).unique()))
+        section = st.selectbox("Section", ["All"] + sorted(df["Section"].dropna().astype(str).unique()))
     with col2:
-        authority_filter = st.selectbox("Filter by Authority", ["All"] + sorted(df["Authority"].dropna().unique()))
+        authority = st.selectbox("Authority", ["All"] + sorted(df["Authority"].dropna().unique()))
 
-    if section_filter != "All":
-        df = df[df["Section"].astype(str) == section_filter]
-    if authority_filter != "All":
-        df = df[df["Authority"] == authority_filter]
+    if section != "All":
+        df = df[df["Section"].astype(str) == section]
+    if authority != "All":
+        df = df[df["Authority"] == authority]
 
     for row in paginate(df, "roc"):
+        render_item(row, "ROC")
+
+with tabs[4]:
+    st.subheader("⭐ Bookmarked Items")
+    for i, item in enumerate(st.session_state.bookmarks):
         st.markdown(f"""
-        <div style='margin-bottom:20px;'>
-        <b>Month:</b> {row['Month']} &nbsp;&nbsp;&nbsp;
-        <b>Title:</b> {row['Title']}<br>
-        <b>Section:</b> {row['Section']} &nbsp;&nbsp;&nbsp;
-        <b>Authority:</b> {row['Authority']}<br>
-        <b>Judgement:</b> <span style='display:inline-block; max-width:90%; text-align:justify;'>{row['Judgement']}</span><br>
-        <a href='{row['Link']}' target='_blank'>📄 Open PDF</a>
+        <div style='margin-bottom:10px;'>
+        <b>[{item['type']}]</b> {item['title']}<br>
+        <a href='{item['link']}' target='_blank'><i class='fa-solid fa-file-pdf'></i> Open PDF</a>
         </div>
-        <hr>
         """, unsafe_allow_html=True)
+        if st.button("❌ Remove", key=f"remove_{i}"):
+            st.session_state.bookmarks.pop(i)
+            save_bookmarks()
+            st.rerun()
